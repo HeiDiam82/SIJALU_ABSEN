@@ -74,6 +74,14 @@ export default function DosenDashboard() {
   // Realtime active status
   const [countdown, setCountdown] = useState<string>('');
 
+  // Manual Attendance States
+  const [showManualModal, setShowManualModal] = useState(false);
+  const [studentsList, setStudentsList] = useState<{ id_user: string; nim: string; nama: string; prodi: string }[]>([]);
+  const [selectedMhsId, setSelectedMhsId] = useState('');
+  const [manualStatus, setManualStatus] = useState<'Hadir' | 'Izin' | 'Sakit' | 'Alpa'>('Hadir');
+  const [savingManual, setSavingManual] = useState(false);
+  const [manualError, setManualError] = useState<string | null>(null);
+
   // 1. Initial Data Load
   useEffect(() => {
     const initDosen = async () => {
@@ -137,6 +145,27 @@ export default function DosenDashboard() {
         };
         setActiveSession(formattedSession);
         fetchAttendance(formattedSession.session_id);
+      }
+
+      // Fetch all students in the database
+      const { data: allStudents } = await supabase
+        .from('mahasiswa')
+        .select(`
+          id_user,
+          nim,
+          prodi,
+          users (nama)
+        `);
+
+      if (allStudents) {
+        setStudentsList(
+          allStudents.map((m: any) => ({
+            id_user: m.id_user,
+            nim: m.nim,
+            prodi: m.prodi,
+            nama: m.users?.nama || 'Unknown'
+          }))
+        );
       }
 
       setLoading(false);
@@ -295,6 +324,41 @@ export default function DosenDashboard() {
       if (error) throw error;
     } catch (err) {
       console.error('Failed to update status:', err);
+    }
+  };
+
+  // 6.5. Save Manual Attendance Entry
+  const handleSaveManualAttendance = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedMhsId || !activeSession) return;
+    setSavingManual(true);
+    setManualError(null);
+
+    try {
+      const { error } = await supabase
+        .from('attendance')
+        .insert({
+          session_id: activeSession.session_id,
+          id_user_mahasiswa: selectedMhsId,
+          status: manualStatus,
+          timestamp: new Date().toISOString()
+        });
+
+      if (error) {
+        if (error.code === '23505') {
+          throw new Error('Mahasiswa ini sudah terdaftar presensinya di kelas ini.');
+        }
+        throw error;
+      }
+
+      setShowManualModal(false);
+      setSelectedMhsId('');
+      setManualStatus('Hadir');
+      fetchAttendance(activeSession.session_id);
+    } catch (err: any) {
+      setManualError(err.message || 'Gagal menyimpan presensi manual.');
+    } finally {
+      setSavingManual(false);
     }
   };
 
@@ -488,7 +552,14 @@ export default function DosenDashboard() {
             </h2>
             
             {activeSession && (
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={() => setShowManualModal(true)}
+                  className="px-3 py-1.5 bg-violet-600 hover:bg-violet-500 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all shadow-md cursor-pointer shrink-0"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  Absensi Manual
+                </button>
                 <div className="px-3.5 py-1.5 bg-zinc-900 border border-zinc-800 rounded-lg text-xs font-semibold text-zinc-300">
                   Total Terdaftar: <span className="font-bold text-violet-400">{attendanceList.length}</span>
                 </div>
@@ -631,6 +702,116 @@ export default function DosenDashboard() {
         </div>
 
       </main>
+
+      {/* MANUAL ATTENDANCE MODAL */}
+      {showManualModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-zinc-950/80 backdrop-blur-sm animate-fadeIn">
+          <div className="glass w-full max-w-md p-6 rounded-2xl border border-zinc-800 shadow-2xl relative">
+            <button 
+              onClick={() => { setShowManualModal(false); setManualError(null); }}
+              className="absolute top-4 right-4 text-zinc-400 hover:text-white transition-colors cursor-pointer"
+            >
+              <X className="h-5 w-5" />
+            </button>
+
+            <div className="flex items-center gap-3 border-b border-zinc-900/80 pb-4 mb-6">
+              <div className="h-10 w-10 rounded-xl bg-violet-600/10 flex items-center justify-center border border-violet-500/20 text-violet-400">
+                <UserCheck className="h-5 w-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-white">Input Presensi Manual</h3>
+                <p className="text-xs text-zinc-400">Masukkan absensi mahasiswa secara manual</p>
+              </div>
+            </div>
+
+            {manualError && (
+              <div className="mb-4 p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-200 text-xs flex items-center gap-2">
+                <AlertCircle className="h-4.5 w-4.5 shrink-0" />
+                <span>{manualError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleSaveManualAttendance} className="space-y-4">
+              <div>
+                <label className="text-xs font-semibold text-zinc-400 block mb-1.5">
+                  Pilih Mahasiswa
+                </label>
+                <select
+                  required
+                  value={selectedMhsId}
+                  onChange={(e) => setSelectedMhsId(e.target.value)}
+                  className="w-full px-4 py-2.5 rounded-xl border border-zinc-800 bg-zinc-950 text-xs text-white focus:outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-550 transition-all"
+                >
+                  <option value="">-- Pilih Mahasiswa --</option>
+                  {studentsList
+                    .filter(s => !attendanceList.some(a => a.mahasiswa?.nim === s.nim))
+                    .map((item) => (
+                      <option key={item.id_user} value={item.id_user}>
+                        {item.nama} ({item.nim} - {item.prodi})
+                      </option>
+                    ))
+                  }
+                </select>
+                {studentsList.filter(s => !attendanceList.some(a => a.mahasiswa?.nim === s.nim)).length === 0 && (
+                  <span className="text-[10px] text-zinc-500 mt-1.5 block">Semua mahasiswa terdaftar sudah absen di kelas ini.</span>
+                )}
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-zinc-400 block mb-1.5">
+                  Status Presensi
+                </label>
+                <div className="grid grid-cols-4 gap-2">
+                  {(['Hadir', 'Izin', 'Sakit', 'Alpa'] as const).map((status) => (
+                    <button
+                      key={status}
+                      type="button"
+                      onClick={() => setManualStatus(status)}
+                      className={`py-2 rounded-lg font-bold text-xs border text-center transition-all cursor-pointer ${
+                        manualStatus === status
+                          ? status === 'Hadir'
+                            ? 'bg-emerald-500/10 border-emerald-500 text-emerald-400 font-black'
+                            : status === 'Izin'
+                              ? 'bg-sky-500/10 border-sky-500 text-sky-400 font-black'
+                              : status === 'Sakit'
+                                ? 'bg-yellow-500/10 border-yellow-500 text-yellow-400 font-black'
+                                : 'bg-rose-500/10 border-rose-500 text-rose-400 font-black'
+                          : 'bg-zinc-950 border-zinc-850 text-zinc-400 hover:border-zinc-700'
+                      }`}
+                    >
+                      {status}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex gap-3 pt-4 border-t border-zinc-900 mt-6">
+                <button
+                  type="button"
+                  onClick={() => { setShowManualModal(false); setManualError(null); }}
+                  className="flex-1 py-2.5 bg-zinc-900 hover:bg-zinc-850 text-zinc-300 border border-zinc-800 rounded-xl text-xs font-semibold transition-all cursor-pointer text-center"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingManual || !selectedMhsId}
+                  className="flex-1 py-2.5 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 glow-primary disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                >
+                  {savingManual ? (
+                    <RefreshCw className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <>
+                      <Check className="h-4 w-4" />
+                      Simpan
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
