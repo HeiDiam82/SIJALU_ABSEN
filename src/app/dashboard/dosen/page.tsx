@@ -49,6 +49,7 @@ interface StudentAttendance {
   timestamp: string;
   status: 'Hadir' | 'Izin' | 'Sakit' | 'Alpa';
   koordinat_gps: { x: number; y: number } | string | null;
+  id_user_mahasiswa: string;
   mahasiswa: {
     nim: string;
     prodi: string;
@@ -74,13 +75,8 @@ export default function DosenDashboard() {
   // Realtime active status
   const [countdown, setCountdown] = useState<string>('');
 
-  // Manual Attendance States
-  const [showManualModal, setShowManualModal] = useState(false);
+  // Students list
   const [studentsList, setStudentsList] = useState<{ id_user: string; nim: string; nama: string; prodi: string }[]>([]);
-  const [selectedMhsId, setSelectedMhsId] = useState('');
-  const [manualStatus, setManualStatus] = useState<'Hadir' | 'Izin' | 'Sakit' | 'Alpa'>('Hadir');
-  const [savingManual, setSavingManual] = useState(false);
-  const [manualError, setManualError] = useState<string | null>(null);
 
   // 1. Initial Data Load
   useEffect(() => {
@@ -113,40 +109,6 @@ export default function DosenDashboard() {
         }
       }
 
-      // Check if there is already an active session for this lecturer
-      const { data: sessionData } = await supabase
-        .from('session')
-        .select(`
-          session_id,
-          schedule_id,
-          qr_code_token,
-          unique_code,
-          expiry_time,
-          schedule (
-            ruangan,
-            course (name)
-          )
-        `)
-        .eq('id_user_dosen', authSession.user.id)
-        .gt('expiry_time', new Date().toISOString())
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      if (sessionData) {
-        const formattedSession: ActiveSession = {
-          session_id: sessionData.session_id,
-          schedule_id: sessionData.schedule_id,
-          qr_code_token: sessionData.qr_code_token,
-          unique_code: sessionData.unique_code,
-          expiry_time: sessionData.expiry_time,
-          course_name: (sessionData.schedule as any).course.name,
-          ruangan: (sessionData.schedule as any).ruangan
-        };
-        setActiveSession(formattedSession);
-        fetchAttendance(formattedSession.session_id);
-      }
-
       // Fetch all students in the database
       const { data: allStudents } = await supabase
         .from('mahasiswa')
@@ -174,6 +136,63 @@ export default function DosenDashboard() {
     initDosen();
   }, [router]);
 
+  // 1.5. Fetch Session and Attendance when Selected Schedule changes
+  const loadSessionAndAttendanceForSchedule = async (scheduleId: string) => {
+    try {
+      const { data: { session: authSession } } = await supabase.auth.getSession();
+      if (!authSession?.user) return;
+
+      // Check if there is an active session for this specific schedule
+      const { data: sessionData, error: sessionErr } = await supabase
+        .from('session')
+        .select(`
+          session_id,
+          schedule_id,
+          qr_code_token,
+          unique_code,
+          expiry_time,
+          schedule (
+            ruangan,
+            course (name)
+          )
+        `)
+        .eq('schedule_id', scheduleId)
+        .gt('expiry_time', new Date().toISOString())
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (sessionErr) {
+        console.error('Session query error:', sessionErr);
+      }
+
+      if (sessionData) {
+        const formattedSession: ActiveSession = {
+          session_id: sessionData.session_id,
+          schedule_id: sessionData.schedule_id,
+          qr_code_token: sessionData.qr_code_token,
+          unique_code: sessionData.unique_code,
+          expiry_time: sessionData.expiry_time,
+          course_name: (sessionData.schedule as any).course.name,
+          ruangan: (sessionData.schedule as any).ruangan
+        };
+        setActiveSession(formattedSession);
+        fetchAttendance(formattedSession.session_id);
+      } else {
+        setActiveSession(null);
+        setAttendanceList([]);
+      }
+    } catch (err) {
+      console.error('Error checking active session:', err);
+    }
+  };
+
+  useEffect(() => {
+    if (selectedSchedule) {
+      loadSessionAndAttendanceForSchedule(selectedSchedule);
+    }
+  }, [selectedSchedule]);
+
   // 2. Hydrate Attendance Lists for Session
   const fetchAttendance = async (sessionId: string) => {
     const { data, error } = await supabase
@@ -183,6 +202,7 @@ export default function DosenDashboard() {
         timestamp,
         status,
         koordinat_gps,
+        id_user_mahasiswa,
         mahasiswa (
           nim,
           prodi,
@@ -327,38 +347,94 @@ export default function DosenDashboard() {
     }
   };
 
-  // 6.5. Save Manual Attendance Entry
-  const handleSaveManualAttendance = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedMhsId || !activeSession) return;
-    setSavingManual(true);
-    setManualError(null);
+  // 6.2. Background Auto-Session Creation
+  const handleCreateSessionInBg = async (scheduleId: string): Promise<string> => {
+    const { data: { session: authSession } } = await supabase.auth.getSession();
+    if (!authSession?.user) {
+      throw new Error('Sesi dosen habis. Silakan login kembali.');
+    }
 
+    const qrToken = crypto.randomUUID();
+    const pinCode = (Math.floor(Math.random() * 900000) + 100000).toString();
+    
+    // Default duration: 90 minutes
+    const expiry = new Date();
+    expiry.setMinutes(expiry.getMinutes() + 90);
+
+    const { data: insertedSession, error: insertErr } = await supabase
+      .from('session')
+      .insert({
+        schedule_id: scheduleId,
+        id_user_dosen: authSession.user.id,
+        qr_code_token: qrToken,
+        unique_code: pinCode,
+        expiry_time: expiry.toISOString()
+      })
+      .select(`
+        session_id,
+        schedule_id,
+        qr_code_token,
+        unique_code,
+        expiry_time,
+        schedule (
+          ruangan,
+          course (name)
+        )
+      `)
+      .single();
+
+    if (insertErr) throw insertErr;
+
+    const formattedSession: ActiveSession = {
+      session_id: insertedSession.session_id,
+      schedule_id: insertedSession.schedule_id,
+      qr_code_token: insertedSession.qr_code_token,
+      unique_code: insertedSession.unique_code,
+      expiry_time: insertedSession.expiry_time,
+      course_name: (insertedSession.schedule as any).course.name,
+      ruangan: (insertedSession.schedule as any).ruangan
+    };
+
+    setActiveSession(formattedSession);
+    return insertedSession.session_id;
+  };
+
+  // 6.3. Insert Attendance for Student
+  const handleInsertStatus = async (sessionId: string, studentId: string, status: 'Hadir' | 'Izin' | 'Sakit' | 'Alpa') => {
     try {
       const { error } = await supabase
         .from('attendance')
         .insert({
-          session_id: activeSession.session_id,
-          id_user_mahasiswa: selectedMhsId,
-          status: manualStatus,
+          session_id: sessionId,
+          id_user_mahasiswa: studentId,
+          status: status,
           timestamp: new Date().toISOString()
         });
+      if (error) throw error;
+      fetchAttendance(sessionId);
+    } catch (err) {
+      console.error('Failed to insert status:', err);
+    }
+  };
 
-      if (error) {
-        if (error.code === '23505') {
-          throw new Error('Mahasiswa ini sudah terdaftar presensinya di kelas ini.');
-        }
-        throw error;
+  // 6.4. Direct Button Click Handler
+  const handleButtonClick = async (studentId: string, status: 'Hadir' | 'Izin' | 'Sakit' | 'Alpa') => {
+    try {
+      let sessionId = activeSession?.session_id;
+      if (!sessionId) {
+        // Auto create session in background
+        sessionId = await handleCreateSessionInBg(selectedSchedule);
       }
-
-      setShowManualModal(false);
-      setSelectedMhsId('');
-      setManualStatus('Hadir');
-      fetchAttendance(activeSession.session_id);
+      
+      const existing = attendanceList.find(a => a.id_user_mahasiswa === studentId);
+      if (existing) {
+        await handleUpdateStatus(existing.attendance_id, status);
+      } else {
+        await handleInsertStatus(sessionId, studentId, status);
+      }
     } catch (err: any) {
-      setManualError(err.message || 'Gagal menyimpan presensi manual.');
-    } finally {
-      setSavingManual(false);
+      console.error('Error in handleButtonClick:', err);
+      alert(err.message || 'Gagal mengubah status presensi.');
     }
   };
 
@@ -541,277 +617,151 @@ export default function DosenDashboard() {
           )}
         </div>
 
-        {/* Right Column: Real-time Attendance Live List */}
+        {/* Right Column: Real-time Student Attendance Roster */}
         <div className="lg:col-span-7 space-y-6">
           
           {/* Header Stats */}
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
             <h2 className="text-xl font-black text-white tracking-wide uppercase flex items-center gap-2">
               <Users className="h-5.5 w-5.5 text-violet-400" />
-              Live Monitor Absensi
+              Daftar Presensi Mahasiswa
             </h2>
             
-            {activeSession && (
-              <div className="flex flex-wrap gap-2">
-                <button
-                  onClick={() => setShowManualModal(true)}
-                  className="px-3 py-1.5 bg-violet-600 hover:bg-violet-500 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all shadow-md cursor-pointer shrink-0"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                  Absensi Manual
-                </button>
-                <div className="px-3.5 py-1.5 bg-zinc-900 border border-zinc-800 rounded-lg text-xs font-semibold text-zinc-300">
-                  Total Terdaftar: <span className="font-bold text-violet-400">{attendanceList.length}</span>
-                </div>
-                <div className="px-3.5 py-1.5 bg-zinc-900 border border-zinc-800 rounded-lg text-xs font-semibold text-zinc-300">
-                  Hadir: <span className="font-bold text-emerald-400">
-                    {attendanceList.filter(a => a.status === 'Hadir').length}
-                  </span>
-                </div>
+            <div className="flex flex-wrap gap-2">
+              <div className="px-3.5 py-1.5 bg-zinc-900 border border-zinc-800 rounded-lg text-xs font-semibold text-zinc-300">
+                Total Mahasiswa: <span className="font-bold text-violet-400">{studentsList.length}</span>
               </div>
-            )}
+              {activeSession && (
+                <>
+                  <div className="px-3.5 py-1.5 bg-zinc-900 border border-zinc-800 rounded-lg text-xs font-semibold text-zinc-300">
+                    Hadir: <span className="font-bold text-emerald-400">
+                      {attendanceList.filter(a => a.status === 'Hadir').length}
+                    </span>
+                  </div>
+                  <div className="px-3.5 py-1.5 bg-zinc-900 border border-zinc-800 rounded-lg text-xs font-semibold text-zinc-300">
+                    Izin/Sakit: <span className="font-bold text-amber-400">
+                      {attendanceList.filter(a => a.status === 'Izin' || a.status === 'Sakit').length}
+                    </span>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
 
-          {!activeSession ? (
-            /* NO SESSION VIEW */
-            <div className="glass p-12 rounded-2xl border border-zinc-900 text-center space-y-4">
-              <div className="h-16 w-16 bg-zinc-900/60 border border-zinc-800 rounded-full flex items-center justify-center mx-auto text-zinc-500">
-                <QrCode className="h-8 w-8" />
+          <div className="glass rounded-2xl border border-zinc-800/80 overflow-hidden">
+            {!activeSession && (
+              <div className="p-4 bg-violet-950/20 border-b border-zinc-900 text-xs text-violet-400 flex items-center gap-2">
+                <AlertCircle className="h-4.5 w-4.5 text-violet-400 shrink-0 animate-pulse" />
+                <span>Sesi presensi belum aktif. Klik tombol status (**H/I/S/A**) pada mahasiswa untuk memulai presensi manual secara instan, atau buka QR Kelas di panel kiri.</span>
               </div>
-              <div className="max-w-sm mx-auto">
-                <h3 className="text-sm font-bold text-zinc-300">Sesi Belum Dimulai</h3>
-                <p className="text-xs text-zinc-500 mt-2 leading-relaxed">
-                  Silakan buat sesi kelas baru di panel sebelah kiri untuk mulai mendeteksi kehadiran mahasiswa secara real-time.
+            )}
+
+            {studentsList.length === 0 ? (
+              <div className="p-12 text-center space-y-3">
+                <div className="h-12 w-12 bg-zinc-900/60 border border-zinc-805 text-zinc-500 rounded-full flex items-center justify-center mx-auto">
+                  <Users className="h-6 w-6" />
+                </div>
+                <h4 className="text-xs font-bold text-zinc-300">Belum Ada Mahasiswa</h4>
+                <p className="text-[11px] text-zinc-500 max-w-xs mx-auto leading-relaxed">
+                  Tidak ada data mahasiswa terdaftar di sistem.
                 </p>
               </div>
-            </div>
-          ) : (
-            /* LIVE REALTIME LIST */
-            <div className="glass rounded-2xl border border-zinc-800/80 overflow-hidden">
-              
-              {attendanceList.length === 0 ? (
-                /* EMPTY ATTENDANCE LIST */
-                <div className="p-12 text-center space-y-3">
-                  <div className="h-12 w-12 bg-violet-500/10 border border-violet-500/20 text-violet-400 rounded-full flex items-center justify-center mx-auto animate-pulse">
-                    <UserCheck className="h-6 w-6" />
-                  </div>
-                  <h4 className="text-xs font-bold text-zinc-300">Menunggu Mahasiswa Check-in</h4>
-                  <p className="text-[11px] text-zinc-500 max-w-xs mx-auto leading-relaxed">
-                    Sesi realtime siap. Mahasiswa yang melakukan scan atau memasukkan PIN akan muncul secara instan di sini.
-                  </p>
-                </div>
-              ) : (
-                /* ATTENDANCE DATA GRID TABLE */
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse text-xs">
-                    <thead>
-                      <tr className="bg-zinc-900/80 border-b border-zinc-850 text-zinc-400 font-bold uppercase tracking-wider">
-                        <th className="p-4">Mahasiswa</th>
-                        <th className="p-4">Status</th>
-                        <th className="p-4">Waktu Check-in</th>
-                        <th className="p-4">Aksi Manual</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-zinc-900">
-                      {attendanceList.map((row) => (
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="bg-zinc-900/80 border-b border-zinc-850 text-zinc-400 font-bold uppercase tracking-wider">
+                      <th className="p-4">Mahasiswa</th>
+                      <th className="p-4">Status</th>
+                      <th className="p-4">Waktu Check-in</th>
+                      <th className="p-4">Aksi Presensi</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-zinc-900">
+                    {studentsList.map((student) => {
+                      const row = attendanceList.find(a => a.id_user_mahasiswa === student.id_user);
+                      return (
                         <tr 
-                          key={row.attendance_id} 
+                          key={student.id_user} 
                           className="hover:bg-zinc-900/40 transition-colors animate-fadeIn"
                         >
                           <td className="p-4">
-                            <div className="font-bold text-white">{row.mahasiswa?.users?.nama || 'Pengguna Baru'}</div>
+                            <div className="font-bold text-white">{student.nama}</div>
                             <div className="text-[10px] text-zinc-500 mt-0.5 font-mono">
-                              {row.mahasiswa?.nim} • {row.mahasiswa?.prodi}
+                              {student.nim} • {student.prodi}
                             </div>
                           </td>
                           <td className="p-4">
-                            <span className={`px-2.5 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider border ${
-                              row.status === 'Hadir' 
-                                ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' 
-                                : row.status === 'Izin' 
-                                  ? 'bg-sky-500/10 border-sky-500/20 text-sky-400' 
-                                  : row.status === 'Sakit' 
-                                    ? 'bg-yellow-500/10 border-yellow-500/20 text-yellow-400' 
-                                    : 'bg-rose-500/10 border-rose-500/20 text-rose-400'
-                            }`}>
-                              {row.status}
-                            </span>
+                            {row ? (
+                              <span className={`px-2.5 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider border ${
+                                row.status === 'Hadir' 
+                                  ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' 
+                                  : row.status === 'Izin' 
+                                    ? 'bg-sky-500/10 border-sky-500/20 text-sky-400' 
+                                    : row.status === 'Sakit' 
+                                      ? 'bg-yellow-500/10 border-yellow-500/20 text-yellow-400' 
+                                      : 'bg-rose-500/10 border-rose-500/20 text-rose-400'
+                              }`}>
+                                {row.status}
+                              </span>
+                            ) : (
+                              <span className="px-2.5 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider border bg-zinc-900/60 border-zinc-900 text-zinc-500">
+                                Belum Presensi
+                              </span>
+                            )}
                           </td>
                           <td className="p-4 font-mono text-[10px] text-zinc-400">
-                            <div className="flex items-center gap-1.5">
-                              {new Date(row.timestamp).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                              {row.koordinat_gps && (
-                                <span className="h-4.5 w-4.5 rounded bg-zinc-950 border border-zinc-850 flex items-center justify-center text-emerald-400" title="GPS Terverifikasi">
-                                  <MapPin className="h-3 w-3" />
-                                </span>
-                              )}
-                            </div>
+                            {row ? (
+                              <div className="flex items-center gap-1.5">
+                                {new Date(row.timestamp).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                                {row.koordinat_gps && (
+                                  <span className="h-4.5 w-4.5 rounded bg-zinc-950 border border-zinc-850 flex items-center justify-center text-emerald-400" title="GPS Terverifikasi">
+                                    <MapPin className="h-3 w-3" />
+                                  </span>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-zinc-600">-</span>
+                            )}
                           </td>
                           <td className="p-4">
                             <div className="flex items-center gap-1">
-                              <button
-                                onClick={() => handleUpdateStatus(row.attendance_id, 'Hadir')}
-                                className={`h-6 px-2 rounded font-bold uppercase text-[9px] transition-all border ${
-                                  row.status === 'Hadir' 
-                                    ? 'bg-emerald-500 border-emerald-400 text-white font-black' 
-                                    : 'bg-zinc-900 border-zinc-850 text-zinc-400 hover:border-zinc-700 hover:text-white'
-                                }`}
-                              >
-                                H
-                              </button>
-                              <button
-                                onClick={() => handleUpdateStatus(row.attendance_id, 'Izin')}
-                                className={`h-6 px-2 rounded font-bold uppercase text-[9px] transition-all border ${
-                                  row.status === 'Izin' 
-                                    ? 'bg-sky-500 border-sky-400 text-white font-black' 
-                                    : 'bg-zinc-900 border-zinc-850 text-zinc-400 hover:border-zinc-700 hover:text-white'
-                                }`}
-                              >
-                                I
-                              </button>
-                              <button
-                                onClick={() => handleUpdateStatus(row.attendance_id, 'Sakit')}
-                                className={`h-6 px-2 rounded font-bold uppercase text-[9px] transition-all border ${
-                                  row.status === 'Sakit' 
-                                    ? 'bg-yellow-500 border-yellow-400 text-white font-black' 
-                                    : 'bg-zinc-900 border-zinc-850 text-zinc-400 hover:border-zinc-700 hover:text-white'
-                                }`}
-                              >
-                                S
-                              </button>
-                              <button
-                                onClick={() => handleUpdateStatus(row.attendance_id, 'Alpa')}
-                                className={`h-6 px-2 rounded font-bold uppercase text-[9px] transition-all border ${
-                                  row.status === 'Alpa' 
-                                    ? 'bg-rose-500 border-rose-400 text-white font-black' 
-                                    : 'bg-zinc-900 border-zinc-850 text-zinc-400 hover:border-zinc-700 hover:text-white'
-                                }`}
-                              >
-                                A
-                              </button>
+                              {(['Hadir', 'Izin', 'Sakit', 'Alpa'] as const).map((status) => {
+                                const isCurrent = row ? row.status === status : false;
+                                let activeClass = '';
+                                if (isCurrent) {
+                                  if (status === 'Hadir') activeClass = 'bg-emerald-500 border-emerald-400 text-white font-black';
+                                  else if (status === 'Izin') activeClass = 'bg-sky-500 border-sky-400 text-white font-black';
+                                  else if (status === 'Sakit') activeClass = 'bg-yellow-500 border-yellow-400 text-white font-black';
+                                  else if (status === 'Alpa') activeClass = 'bg-rose-500 border-rose-400 text-white font-black';
+                                } else {
+                                  activeClass = 'bg-zinc-900 border-zinc-850 text-zinc-400 hover:border-zinc-700 hover:text-white';
+                                }
+
+                                return (
+                                  <button
+                                    key={status}
+                                    onClick={() => handleButtonClick(student.id_user, status)}
+                                    className={`h-6 px-2.5 rounded font-bold uppercase text-[9px] transition-all border cursor-pointer ${activeClass}`}
+                                    title={`Tandai ${status}`}
+                                  >
+                                    {status === 'Hadir' ? 'H' : status === 'Izin' ? 'I' : status === 'Sakit' ? 'S' : 'A'}
+                                  </button>
+                                );
+                              })}
                             </div>
                           </td>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          )}
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
         </div>
 
       </main>
-
-      {/* MANUAL ATTENDANCE MODAL */}
-      {showManualModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-zinc-950/80 backdrop-blur-sm animate-fadeIn">
-          <div className="glass w-full max-w-md p-6 rounded-2xl border border-zinc-800 shadow-2xl relative">
-            <button 
-              onClick={() => { setShowManualModal(false); setManualError(null); }}
-              className="absolute top-4 right-4 text-zinc-400 hover:text-white transition-colors cursor-pointer"
-            >
-              <X className="h-5 w-5" />
-            </button>
-
-            <div className="flex items-center gap-3 border-b border-zinc-900/80 pb-4 mb-6">
-              <div className="h-10 w-10 rounded-xl bg-violet-600/10 flex items-center justify-center border border-violet-500/20 text-violet-400">
-                <UserCheck className="h-5 w-5" />
-              </div>
-              <div>
-                <h3 className="text-sm font-bold text-white">Input Presensi Manual</h3>
-                <p className="text-xs text-zinc-400">Masukkan absensi mahasiswa secara manual</p>
-              </div>
-            </div>
-
-            {manualError && (
-              <div className="mb-4 p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-200 text-xs flex items-center gap-2">
-                <AlertCircle className="h-4.5 w-4.5 shrink-0" />
-                <span>{manualError}</span>
-              </div>
-            )}
-
-            <form onSubmit={handleSaveManualAttendance} className="space-y-4">
-              <div>
-                <label className="text-xs font-semibold text-zinc-400 block mb-1.5">
-                  Pilih Mahasiswa
-                </label>
-                <select
-                  required
-                  value={selectedMhsId}
-                  onChange={(e) => setSelectedMhsId(e.target.value)}
-                  className="w-full px-4 py-2.5 rounded-xl border border-zinc-800 bg-zinc-950 text-xs text-white focus:outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-550 transition-all"
-                >
-                  <option value="">-- Pilih Mahasiswa --</option>
-                  {studentsList
-                    .filter(s => !attendanceList.some(a => a.mahasiswa?.nim === s.nim))
-                    .map((item) => (
-                      <option key={item.id_user} value={item.id_user}>
-                        {item.nama} ({item.nim} - {item.prodi})
-                      </option>
-                    ))
-                  }
-                </select>
-                {studentsList.filter(s => !attendanceList.some(a => a.mahasiswa?.nim === s.nim)).length === 0 && (
-                  <span className="text-[10px] text-zinc-500 mt-1.5 block">Semua mahasiswa terdaftar sudah absen di kelas ini.</span>
-                )}
-              </div>
-
-              <div>
-                <label className="text-xs font-semibold text-zinc-400 block mb-1.5">
-                  Status Presensi
-                </label>
-                <div className="grid grid-cols-4 gap-2">
-                  {(['Hadir', 'Izin', 'Sakit', 'Alpa'] as const).map((status) => (
-                    <button
-                      key={status}
-                      type="button"
-                      onClick={() => setManualStatus(status)}
-                      className={`py-2 rounded-lg font-bold text-xs border text-center transition-all cursor-pointer ${
-                        manualStatus === status
-                          ? status === 'Hadir'
-                            ? 'bg-emerald-500/10 border-emerald-500 text-emerald-400 font-black'
-                            : status === 'Izin'
-                              ? 'bg-sky-500/10 border-sky-500 text-sky-400 font-black'
-                              : status === 'Sakit'
-                                ? 'bg-yellow-500/10 border-yellow-500 text-yellow-400 font-black'
-                                : 'bg-rose-500/10 border-rose-500 text-rose-400 font-black'
-                          : 'bg-zinc-950 border-zinc-850 text-zinc-400 hover:border-zinc-700'
-                      }`}
-                    >
-                      {status}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="flex gap-3 pt-4 border-t border-zinc-900 mt-6">
-                <button
-                  type="button"
-                  onClick={() => { setShowManualModal(false); setManualError(null); }}
-                  className="flex-1 py-2.5 bg-zinc-900 hover:bg-zinc-850 text-zinc-300 border border-zinc-800 rounded-xl text-xs font-semibold transition-all cursor-pointer text-center"
-                >
-                  Batal
-                </button>
-                <button
-                  type="submit"
-                  disabled={savingManual || !selectedMhsId}
-                  className="flex-1 py-2.5 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 glow-primary disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-                >
-                  {savingManual ? (
-                    <RefreshCw className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <>
-                      <Check className="h-4 w-4" />
-                      Simpan
-                    </>
-                  )}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
