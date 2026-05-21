@@ -1,7 +1,6 @@
 const fs = require('fs');
 const { createClient } = require('@supabase/supabase-js');
 
-// Helper to load env variables from .env.local
 function loadEnv() {
   const envPath = '.env.local';
   if (!fs.existsSync(envPath)) {
