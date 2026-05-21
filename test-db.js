@@ -7,7 +7,6 @@ function loadEnv() {
     console.error('File .env.local not found at ' + envPath);
     process.exit(1);
   }
-  
   const content = fs.readFileSync(envPath, 'utf8');
   const env = {};
   content.split('\n').forEach(line => {
@@ -20,7 +19,6 @@ function loadEnv() {
   });
   return env;
 }
-
 async function runTests() {
   const env = loadEnv();
   const url = env.NEXT_PUBLIC_SUPABASE_URL;
