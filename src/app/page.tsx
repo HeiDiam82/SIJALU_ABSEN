@@ -163,8 +163,8 @@ export default function AuthPage() {
       setLoading(false);
       return;
     }
-    if (role === 'admin' && !idAdmin) {
-      setError('ID Admin harus diisi.');
+    if (role === 'admin') {
+      setError('Registrasi administrator tidak diizinkan.');
       setLoading(false);
       return;
     }

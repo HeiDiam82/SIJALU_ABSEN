@@ -136,7 +136,7 @@ BEGIN
     
     RETURN NEW;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 -- Trigger to execute the sync function on auth user created
 CREATE OR REPLACE TRIGGER on_auth_user_created

@@ -25,7 +25,11 @@ BEGIN
         raw_app_meta_data,
         raw_user_meta_data,
         created_at,
-        updated_at
+        updated_at,
+        confirmation_token,
+        email_change,
+        email_change_token_new,
+        recovery_token
     )
     VALUES (
         '00000000-0000-0000-0000-000000000000',
@@ -38,7 +42,11 @@ BEGIN
         '{"provider":"email","providers":["email"]}',
         '{"role":"admin","nama":"Admin SIJALU","id_admin":"ADM01"}',
         now(),
-        now()
+        now(),
+        '',
+        '',
+        '',
+        ''
     );
 
     -- 2. Insert Dosen to auth.users
@@ -53,7 +61,11 @@ BEGIN
         raw_app_meta_data,
         raw_user_meta_data,
         created_at,
-        updated_at
+        updated_at,
+        confirmation_token,
+        email_change,
+        email_change_token_new,
+        recovery_token
     )
     VALUES (
         '00000000-0000-0000-0000-000000000000',
@@ -66,7 +78,11 @@ BEGIN
         '{"provider":"email","providers":["email"]}',
         '{"role":"dosen","nama":"Dr. Dosen Pengampu","nip":"1985031201","departemen":"Ilmu Komputer"}',
         now(),
-        now()
+        now(),
+        '',
+        '',
+        '',
+        ''
     );
 
     -- 3. Insert Mahasiswa to auth.users
@@ -81,7 +97,11 @@ BEGIN
         raw_app_meta_data,
         raw_user_meta_data,
         created_at,
-        updated_at
+        updated_at,
+        confirmation_token,
+        email_change,
+        email_change_token_new,
+        recovery_token
     )
     VALUES (
         '00000000-0000-0000-0000-000000000000',
@@ -94,7 +114,11 @@ BEGIN
         '{"provider":"email","providers":["email"]}',
         '{"role":"mahasiswa","nama":"Mahasiswa Rajin","nim":"24060120140001","prodi":"Informatika"}',
         now(),
-        now()
+        now(),
+        '',
+        '',
+        '',
+        ''
     );
 
     -- NOTE: The trigger `on_auth_user_created` will automatically copy these users
