@@ -5,7 +5,7 @@ const { createClient } = require('@supabase/supabase-js');
 function loadEnv() {
   const envPath = '.env.local';
   if (!fs.existsSync(envPath)) {
-    console.error('File .env.local not found!');
+    console.error('File .env.local not found at ' + envPath);
     process.exit(1);
   }
   
@@ -89,6 +89,16 @@ async function runTests() {
     }
   } catch (err) {
     console.log('❌ Relation [session -> schedule -> course]: Exception ->', err.message);
+  }
+
+  console.log('\n--- 3. Checking for Seed Data presence ---');
+  try {
+    const { data: users, error: usersErr } = await supabase.from('users').select('email, role');
+    if (usersErr) throw usersErr;
+    console.log(`Found ${users.length} users in the database:`);
+    users.forEach(u => console.log(` - ${u.email} (${u.role})`));
+  } catch (err) {
+    console.log('❌ Failed checking seed data:', err.message);
   }
 }
 
